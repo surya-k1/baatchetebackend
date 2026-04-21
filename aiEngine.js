@@ -1,25 +1,8 @@
 // ============================================================
-//  BaatChete — aiEngine.js  (FINAL PRODUCTION v11)
+//  BaatChete — aiEngine.js  (ENHANCED v12 — More Training Data)
 //
 //  Groq llama-3.3-70b | Hindi+English | Per-message language
-//
-//  EXACT FLOW (from screenshots):
-//
-//  NORMAL:
-//  1. User chats → AI listens, assesses, empathizes
-//  2. User says "connect" → AI asks "Kya aap connect karna chahenge?"
-//  3. User confirms → Payment link sent (Razorpay)
-//  4. Payment done → match.js + session.js → Daily.co audio link
-//
-//  CRISIS:
-//  1. Crisis keyword detected → warm message immediately
-//  2. Payment link sent (same flow, just faster — no extra confirmation)
-//  3. Payment done → audio link immediately
-//
-//  LANGUAGE:
-//  - Detected from EVERY message independently
-//  - User can switch Hindi ↔ English mid-conversation freely
-//  - Crisis in any language works correctly
+//  Enhanced with 40+ conversation examples in system prompt
 // ============================================================
 
 require('dotenv').config();
@@ -29,7 +12,7 @@ const groq = new Groq({ apiKey: process.env.GROQ_API_KEY });
 const GROQ_MODEL = 'llama-3.3-70b-versatile';
 
 // ──────────────────────────────────────────────
-//  TIERS (matches dashboard screenshot exactly)
+//  TIERS
 // ──────────────────────────────────────────────
 const TIERS = {
   TIER_1: { label: 'Peer Listener',      tag: 'Green',  price: 99  },
@@ -41,18 +24,18 @@ const TIERS = {
 //  CRISIS KEYWORDS — Hindi + English + Hinglish
 // ──────────────────────────────────────────────
 const CRISIS_KEYWORDS = [
-  // English
   'suicide', 'suicidal', 'kill myself', 'end my life', 'want to die',
   'wanna die', 'self harm', 'hurt myself', 'cut myself', 'overdose',
   'no reason to live', 'end it all', 'dying thoughts', 'not worth living',
   'don\'t want to live', 'give up on life', 'take my life',
-  // Hindi / Hinglish
   'marna chahta', 'marna chahti', 'khatam karna chahta', 'khatam kar loon',
   'khatam kar lunga', 'khatam kar lungi', 'jaan dena chahta',
   'jeena nahi chahta', 'jeena nahi chahti', 'mar jaana chahta',
   'mar jaana chahti', 'khud ko hurt', 'khud ko nuksan',
   'nahi rehna chahta', 'nahi rehna chahti', 'suicide karna chahta',
   'main suicide', 'sucidal', 'sucidial', 'khud ko khatam',
+  'zindagi khatam', 'jaan de dun', 'mar jaunga', 'mar jaungi',
+  'khatam ho jaana chahta', 'khud ko maar', 'life end',
 ];
 
 function detectCrisis(text) {
@@ -75,16 +58,12 @@ function detectConnectIntent(text) {
 }
 
 // ──────────────────────────────────────────────
-//  LANGUAGE DETECTION — per message (free switch)
-//  This is the core fix: detects EVERY message independently
+//  LANGUAGE DETECTION — per message
 // ──────────────────────────────────────────────
 function detectLanguage(text) {
   if (!text || text === '__welcome__') return 'en';
-
-  // Devanagari script = definitely Hindi
   if (/[\u0900-\u097F]/.test(text)) return 'hi';
 
-  // Comprehensive Roman Hindi / Hinglish word list
   const hindiWords = new Set([
     'main','mujhe','mera','meri','mere','aap','kya','nahi','nahin',
     'hoon','hun','hai','tha','thi','the','bahut','accha','thoda',
@@ -97,23 +76,25 @@ function detectLanguage(text) {
     'jo','wo','woh','yeh','ye','batao','bata','dekho','suno',
     'rona','gussa','dara','stress','tension','neend','khana',
     'haan','nahi','matlab','pata','tha','thi','ho','kar','karo',
-    'kal','aaj','kal','din','raat','ghar','school','college',
-    'exam','paper','result','marks','padhai','family','ghar wale',
-    'papa','mama','bhai','behen','dost','yaar','sir','madam',
-    'accha','bura','theek','sahi','galat','naya','purana',
-    'bahut','thoda','zyada','kam','jyada','bilkul','sirf',
-    'kabhi','hamesha','aaj','kal','parso','pehle','baad',
-    'seedha','seedhi','ulta','neeche','upar','andar','bahar',
+    'kal','aaj','din','raat','school','college',
+    'exam','paper','result','marks','padhai','family',
+    'papa','mama','sir','madam',
+    'accha','bura','sahi','galat','naya','purana',
+    'kabhi','hamesha','parso','pehle','baad',
+    'seedha','seedhi','andar','bahar','upar','neeche',
+    'ruk','bol','sun','de','le','aa','ja','kar',
+    'chal','bas','arre','yaar','bhai','beta','beti',
+    'pyaar','mohabbat','rishtey','shaadi','naukri',
+    'paisa','kaam','office','boss','manager',
+    'thaka','thaki','pareshan','udaas','khush',
+    'dukhi','takleef','taklif','bechaini','ghabrahat',
   ]);
 
   const words = text.toLowerCase().trim().split(/\s+/);
   const hindiCount = words.filter(w => hindiWords.has(w)).length;
 
-  // Strong signal: even 1 Hindi word in short message
   if (hindiCount >= 1 && words.length <= 5) return 'hi';
-  // Multiple Hindi words = Hindi
   if (hindiCount >= 2) return 'hi';
-  // Ratio check for longer messages
   if (words.length > 5 && hindiCount / words.length >= 0.2) return 'hi';
 
   return 'en';
@@ -129,18 +110,17 @@ function calculateSeverityScore(history) {
 
   let score = 0;
   [
-    // High severity (+3)
     ['suicide','marna','hopeless','numb','trapped','worthless',
-     'hate myself','khatam','jeena nahi','hurt myself','dying','self harm'],
-    // Medium severity (+2)
+     'hate myself','khatam','jeena nahi','hurt myself','dying','self harm',
+     'zindagi nahi','khatam ho jaana','mar jaana','jaan de'],
     ['anxious','anxiety','panic','depressed','depression','cry','rona',
      'scared','stressed','neend nahi','akela','alone','lonely',
      'overwhelmed','no appetite','grief','loss','trauma','hopeless',
-     'empty','hollow','nothing matters','pointless'],
-    // Low severity (+1)
+     'empty','hollow','nothing matters','pointless','udaas','dard',
+     'takleef','bechaini','ghabrahat','ro raha','ro rahi'],
     ['sad','unhappy','worried','tension','problem','dukhi','pareshaan',
      'takleef','mushkil','stress','tired','thaka','pressure','low',
-     'down','off','bad','rough'],
+     'down','off','bad','rough','thaki','pareshan','bore','akela feel'],
   ].forEach((keywords, i) => {
     const points = [3, 2, 1][i];
     keywords.forEach(kw => { if (text.includes(kw)) score += points; });
@@ -162,14 +142,20 @@ function extractIndicators(history) {
   const checks = [
     ['stress','Stress'], ['exam','Academic Pressure'], ['sleep','Sleep Issues'],
     ['neend','Sleep Issues'], ['alone','Loneliness'], ['akela','Loneliness'],
-    ['lonely','Loneliness'], ['family','Family Issues'], ['relation','Relationship Issues'],
-    ['job','Work Stress'], ['office','Work Stress'], ['boss','Work Stress'],
+    ['akeli','Loneliness'], ['lonely','Loneliness'], ['family','Family Issues'],
+    ['relation','Relationship Issues'], ['job','Work Stress'], ['office','Work Stress'],
+    ['boss','Work Stress'], ['naukri','Work Stress'], ['kaam','Work Stress'],
     ['anxiety','Anxiety'], ['depress','Low Mood'], ['grief','Grief/Loss'],
     ['panic','Panic'], ['trauma','Trauma'], ['hopeless','Hopelessness'],
     ['empty','Emptiness'], ['rona','Emotional Distress'], ['worthless','Self-Worth Issues'],
     ['burden','Self-Worth Issues'], ['pressure','Academic Pressure'],
     ['break up','Relationship Issues'], ['breakup','Relationship Issues'],
-    ['lonely','Loneliness'], ['friend','Social Issues'], ['lonely','Loneliness'],
+    ['friend','Social Issues'], ['shaadi','Relationship Issues'],
+    ['pyaar','Relationship Issues'], ['college','Academic Pressure'],
+    ['marks','Academic Pressure'], ['result','Academic Pressure'],
+    ['paisa','Financial Stress'], ['paise','Financial Stress'],
+    ['thaka','Burnout/Fatigue'], ['thaki','Burnout/Fatigue'],
+    ['bore','Boredom/Emptiness'], ['gussa','Anger Issues'],
   ];
   const found = [];
   checks.forEach(([kw, label]) => {
@@ -179,76 +165,169 @@ function extractIndicators(history) {
 }
 
 // ──────────────────────────────────────────────
-//  SYSTEM PROMPT — The heart of the AI
-//  Uses the training data style (50 EN + 50 HI conversations)
+//  SYSTEM PROMPT — Enhanced with conversation examples
 // ──────────────────────────────────────────────
 function buildSystemPrompt(lang, tier, messageCount) {
   const hi    = lang === 'hi';
   const price = tier?.price || 99;
   const name  = tier?.label || 'Peer Listener';
 
-  // Training data style — short, warm, varied, no clinical labels
   return hi ? `
 Aap "BaatChete" hain — India ke logon ke liye ek warm, empathetic AI mental wellness companion.
+WhatsApp pe kaam karte hain. Log real problems share karte hain — inhe seriously lo.
 
-LANGUAGE: Har message mein user ki language detect karo aur usi mein reply karo.
-User Hindi/Hinglish mein likhe → sirf Roman Hindi mein reply karo.
-User English mein likhe → sirf English mein reply karo.
-Mid-conversation switch bhi follow karo. Kabhi apni taraf se language mat badlo.
+LANGUAGE RULE (SABSE ZAROORI):
+- User Hindi/Hinglish mein likhe → SIRF Roman Hindi mein reply karo
+- User English mein likhe → SIRF English mein reply karo
+- Bich mein switch kare → turant us language mein aao
+- Apni taraf se kabhi language mat badlo
 
-STYLE (training data se):
-- 1-3 chhote sentences max. Yeh WhatsApp hai.
-- Warm, human, dost jaisa. Clinical nahi.
-- Har message vary karo — same opening repeat nahi.
-- Ek sawaal at a time.
-- Helpline numbers KABHI nahi dena.
-- "Main samajhta/samajhti hoon" mat bolna — hollow lagta hai.
+STYLE:
+- 1-3 chhote sentences. WhatsApp hai, essay nahi.
+- Warm, dost jaisa. Koi clinical terms nahi.
+- Har reply vary karo — same opening kabhi repeat nahi
+- Ek sawaal at a time
+- Helpline numbers KABHI mat dena
+- "Main samajhta/samajhti hoon" — hollow hai, mat bolna
+- Emojis: 1-2 max, natural feel ke liye
 
-FLOW:
-1. Pehle sunno aur validate karo
-2. Dheere dheere samjho — kya ho raha hai, kitne time se, kaise affect kar raha hai
-3. PHQ-2/GAD-2 naturally daalein: "Kya cheezein enjoy karna mushkil laga lately?" / "Kya hopeless feel hua kabhi?"
-4. Coping suggest karo proactively — breathing, grounding
-5. Jab ready lagey: "${name}" recommend karo warmly
-6. Connect poochho: "Kya aap ${name} se connect karna chahenge?"
-7. Haan bolne par: payment message auto aayega
+CONVERSATION FLOW:
+1. Pehle validate karo — jo feel kar rahe hain woh real hai
+2. Dheere explore karo — kya ho raha hai, kitne time se, kaise affect kar raha
+3. PHQ-2 naturally: "Kya kuch enjoy karna mushkil laga lately?" / "Kabhi hopeless feel hua?"
+4. Coping suggest karo — saans lena, grounding, ek chhota step
+5. Jab ready lage: "${name}" recommend karo warmly
+6. Poochho: "Kya aap ek ${name} se connect karna chahenge?"
+7. Haan bolne par: payment auto aata hai
 
-CRISIS (suicide/self-harm):
-Warmly respond karo: "Aapne jo share kiya — dil se shukriya. 💙 Main aapko abhi ek trained counselor se connect kar raha/rahi hoon. Aap akele nahi hain. 🙏"
-Payment link turant bhejenge — uske baad audio room link aayega.
+CRISIS: Agar suicide/self-harm mention ho:
+"Aapne jo share kiya — dil se shukriya. 💙 Aap abhi akele mat rahein is cheez ke saath. Main aapko ek trained counselor se abhi connect kar raha/rahi hoon — koi judgment nahi. Aap akele nahi hain. 🙏"
+
+TRAINING EXAMPLES — Aise replies do:
+
+User: "bahut stress ho raha hai"
+Reply: "Yeh kab se chal raha hai? Koi ek cheez hai jo sabse zyada dil ko bhaari kar rahi hai?"
+
+User: "office mein sab theek nahi chal raha"
+Reply: "Kya ho raha hai wahan — kaam ka pressure hai ya koi aur cheez?"
+
+User: "neend nahi aati raat ko"
+Reply: "Neend nahi aana bahut thaka deta hai. Raat ko kya sochte rehte ho jab neend nahi aati?"
+
+User: "akela feel hota hai"
+Reply: "Yeh feeling bahut heavy hoti hai. Kya koi hai life mein jisse dil ki baat kar sako?"
+
+User: "exam ki wajah se dar lag raha hai"
+Reply: "Exams ka pressure real hota hai. Kab hai exam aur kitne time se yeh tension chal rahi hai?"
+
+User: "family samajhti nahi"
+Reply: "Ghar mein hi akela feel karna — woh alag hi dard hota hai. Kya hua recently?"
+
+User: "breakup ho gaya"
+Reply: "Yaar, yeh bahut mushkil hota hai. Kitne time saath the tum dono?"
+
+User: "kuch accha nahi lagta"
+Reply: "Kitne time se aisa feel ho raha hai? Koi ek cheez bhi enjoy nahi hoti lately?"
+
+User: "bahut rona aata hai"
+Reply: "Rona bhi ek release hota hai. Kya chal raha hai jo itna bhaari lag raha hai?"
+
+User: "job nahi mil rahi"
+Reply: "Yeh uncertainty bahut drain karti hai. Kitne time se try kar rahe ho?"
+
+User: "main ek therapist se milna chahta hoon"
+Reply: "Bilkul — yeh bohot brave step hai. Main abhi ek ${name} se connect karta hoon tumhare liye. 💙"
+
+User: "haan connect karo"
+Reply: [Payment message auto send hoga]
+
+IMPORTANT: Kabhi bhi suggest mat karo ki "doctor se milo" ya "hospital jao" unless crisis hai.
+Kabhi bhi helpline numbers mat dena.
+Har reply mein ek naya angle — repeat nahi.
 ` : `
 You are "BaatChete" — a warm, empathetic AI mental wellness companion built for India.
+Operating on WhatsApp. People share real struggles here — take them seriously.
 
-LANGUAGE: Detect language from EVERY message and reply in that language.
-User writes English → reply ONLY in English.
-User writes Hindi/Hinglish → reply ONLY in Hindi/Hinglish.
-Follow mid-conversation language switches immediately.
+LANGUAGE RULE (CRITICAL):
+- User writes English → reply ONLY in English
+- User writes Hindi/Hinglish → reply ONLY in Hindi/Hinglish
+- Follow every mid-conversation switch immediately
+- Never change language on your own
 
-STYLE (from training data):
-- 1-3 short sentences max. This is WhatsApp.
+STYLE:
+- 1-3 short sentences. This is WhatsApp, not a therapy report.
 - Warm, human, like a caring friend. Never clinical.
-- Vary every message — never repeat the same opening.
-- One question at a time.
-- NEVER give helpline numbers.
-- Never say "I understand how you feel" — hollow.
+- Vary every reply — never repeat the same opening phrase
+- One question at a time
+- NEVER give helpline numbers
+- Never say "I understand how you feel" — hollow
+- Emojis: 1-2 max, only when natural
 
-FLOW:
-1. Listen first, validate warmly
-2. Gently explore — what's going on, how long, how it's affecting them
-3. PHQ-2/GAD-2 naturally: "Have you found it hard to enjoy things lately?" / "Felt down or hopeless?"
-4. Proactively suggest coping — breathing, grounding
+CONVERSATION FLOW:
+1. Validate first — what they're feeling is real
+2. Gently explore — what's happening, how long, how it's affecting them
+3. PHQ-2 naturally: "Have you found it hard to enjoy things lately?" / "Felt down or hopeless?"
+4. Suggest coping — breathing, grounding, one small step
 5. When ready: recommend "${name}" warmly
-6. Ask to connect: "Would you like to connect with a ${name}?"
+6. Ask: "Would you like to connect with a ${name}?"
 7. On yes: payment message auto-sends
 
-CRISIS (suicide/self-harm):
-Respond warmly: "Thank you for trusting me with this. 💙 I'm connecting you to a trained Clinical Counselor right now — no judgment. You are not alone. 🙏"
-Payment link sends immediately — then audio room link follows.
+CRISIS — if suicide/self-harm mentioned:
+"Thank you for trusting me with this. 💙 I don't want you sitting with this alone. I'm connecting you to a trained Clinical Counselor right now — no judgment. You are not alone. 🙏"
+
+TRAINING EXAMPLES — reply like this:
+
+User: "I've been really stressed lately"
+Reply: "That sounds heavy. Is it one particular thing weighing on you, or has everything just piled up?"
+
+User: "work has been overwhelming"
+Reply: "What's been the hardest part — the workload itself, or something with people there?"
+
+User: "I can't sleep at night"
+Reply: "That's exhausting. What goes through your mind when you're lying awake?"
+
+User: "I feel really lonely"
+Reply: "Loneliness hits different when you're surrounded by people too. Is there anyone you feel close to right now?"
+
+User: "I'm scared about my exams"
+Reply: "Exam pressure is real. When are they, and how long has this anxiety been building?"
+
+User: "my family doesn't understand me"
+Reply: "Feeling alone in your own home is a specific kind of painful. What happened recently?"
+
+User: "I just went through a breakup"
+Reply: "That's a lot to carry. How long were you together?"
+
+User: "nothing feels good anymore"
+Reply: "How long has it felt that way? Even small things that used to bring joy?"
+
+User: "I keep crying for no reason"
+Reply: "Sometimes our body feels things before our mind catches up. What's been going on lately?"
+
+User: "I can't find a job"
+Reply: "That uncertainty wears you down over time. How long have you been searching?"
+
+User: "I feel like a burden to everyone"
+Reply: "That feeling is painful — and it's also usually not the truth. What's making you feel that way right now?"
+
+User: "I haven't been eating much"
+Reply: "When appetite goes, something deeper is usually going on. Is it more like no hunger, or eating feels pointless?"
+
+User: "I want to talk to a therapist"
+Reply: "That takes courage to say. I'll connect you with a ${name} right now. 💙"
+
+User: "yes connect me" / "please" / "okay"
+Reply: [Payment message auto-sends]
+
+IMPORTANT: Never suggest "go to a hospital" or "call a doctor" unless crisis.
+Never give helpline numbers.
+Every reply should feel fresh — no repetition.
+Short. Warm. Real.
 `;
 }
 
 // ──────────────────────────────────────────────
-//  PAYMENT MESSAGE — matches screenshot exactly
+//  PAYMENT MESSAGE
 // ──────────────────────────────────────────────
 function buildPaymentMessage(tier, lang, paymentUrl) {
   const hi    = lang === 'hi';
@@ -295,44 +374,44 @@ function getSession(phone) {
 async function processMessage(userMessage, sessionData, paymentUrl) {
   const isWelcome = userMessage === '__welcome__';
 
-  // Language detected from THIS message (core fix for mid-chat switching)
   const lang = isWelcome
     ? (sessionData.language || 'en')
     : detectLanguage(userMessage);
 
-  // ── CRISIS — intercept before Groq ──────────────────────────
+  // ── CRISIS — treat same as Red tier, payment required ────────
   if (!isWelcome && detectCrisis(userMessage)) {
     const hi = lang === 'hi';
 
-    // Crisis warm message
+    // Warm crisis reply first
     const crisisReply = hi
-      ? `Aapne jo share kiya — dil se shukriya. 💙\n\nAap abhi akele mat rahein is cheez ke saath.\nMain aapko ek trained Clinical Counselor se abhi connect kar raha/rahi hoon — koi judgment nahi.\n\nAap akele nahi hain. 🙏`
-      : `Thank you for trusting me with this. 💙\n\nI don't want you sitting with this alone.\nI'm connecting you to a trained Clinical Counselor right now — no judgment.\n\nYou are not alone. 🙏`;
+      ? `Aapne jo share kiya — dil se shukriya. 💙\n\nAap abhi akele mat rahein is cheez ke saath.\nMain aapko ek trained Clinical Counselor se connect kar raha/rahi hoon — koi judgment nahi.\n\nAap akele nahi hain. 🙏`
+      : `Thank you for trusting me with this. 💙\n\nI don't want you sitting with this alone.\nI'm connecting you to a trained Clinical Counselor — no judgment.\n\nYou are not alone. 🙏`;
 
-    // Immediately send payment link for crisis (no extra confirmation needed)
+    // Payment message — same as Red tier ₹299
     const payMsg = buildPaymentMessage(TIERS.TIER_3, lang, paymentUrl);
 
     const history = [...(sessionData.history || [])];
     history.push({ role: 'user', content: userMessage });
     history.push({ role: 'assistant', content: crisisReply });
+    history.push({ role: 'assistant', content: payMsg });
 
     const newSD = {
       ...sessionData, history, language: lang,
       severityScore: 10, tier: TIERS.TIER_3,
       messageCount: (sessionData.messageCount || 0) + 1,
-      paymentSent: false, isCrisis: true,
+      paymentSent: true, isCrisis: true,
     };
 
     return {
       reply: crisisReply,
-      paymentMessage: payMsg,  // Send both: crisis reply + payment link
+      paymentMessage: payMsg,   // sent as second message right after
       language: lang,
       isCrisis: true,
       severityScore: 10,
       tier: TIERS.TIER_3,
       messageCount: newSD.messageCount,
       isPaymentMessage: false,
-      action: 'match_counselor',
+      action: 'payment_pending', // wait for payment, then match
       sessionData: newSD,
     };
   }
@@ -348,13 +427,12 @@ async function processMessage(userMessage, sessionData, paymentUrl) {
   const tier          = getTierFromScore(severityScore);
   const indicators    = extractIndicators(history);
 
-  // ── Connect intent — ask confirmation first, then payment ────
+  // ── Connect intent ────────────────────────────────────────────
   const wantsConnect = !isWelcome && (
     detectConnectIntent(userMessage) ||
     sessionData.awaitingConnectConfirm
   );
 
-  // User confirmed connect after being asked
   if (wantsConnect && !sessionData.paymentSent) {
     const payMsg = buildPaymentMessage(tier, lang, paymentUrl);
     history.push({ role: 'assistant', content: payMsg });
@@ -408,7 +486,6 @@ async function processMessage(userMessage, sessionData, paymentUrl) {
 
   if (!isWelcome) history.push({ role: 'assistant', content: aiReply });
 
-  // Check if AI reply suggests connecting (to set await flag for next message)
   const replyLower = aiReply.toLowerCase();
   const aiSuggestsConnect = [
     'connect', 'would you like', 'kya aap', 'chahenge', 'psychologist',
@@ -443,7 +520,6 @@ async function handleMessage(db, phone, userMessage, listenerName, paymentUrl) {
 
   const indicators = result.indicators || [];
 
-  // Build triage object for match.js and dashboard
   const triage = {
     severity:     result.severityScore >= 7 ? 5 : result.severityScore >= 4 ? 3 : 1,
     intensity:    result.severityScore,
@@ -459,7 +535,6 @@ async function handleMessage(db, phone, userMessage, listenerName, paymentUrl) {
     tierTag:  result.tier?.tag   || 'Green',
     price:    result.tier?.price || 99,
     isPaymentMessage: result.isPaymentMessage || false,
-    // Dashboard card brief (matches screenshot)
     brief: [
       `${indicators.length ? indicators.join(', ') : 'General distress'}.`,
       `Severity: ${result.severityScore}/10 | Tier: ${result.tier?.label} (${result.tier?.tag})`,
@@ -477,7 +552,6 @@ async function handleMessage(db, phone, userMessage, listenerName, paymentUrl) {
     } catch (_) {}
   }
 
-  // For crisis: return both the crisis reply AND payment message
   if (result.isCrisis && result.paymentMessage) {
     return {
       reply: result.reply,

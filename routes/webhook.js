@@ -1,64 +1,71 @@
 // ============================================================
-//  BaatChete — routes/webhook.js  (FINAL)
+//  BaatChete — routes/webhook.js  (FIXED v2)
 //
-//  FLOW:
-//  Normal: AI reply → user confirms connect → payment link
-//          → payment webhook → match.js → session.js → audio link
+//  FLOW — ALL tiers same:
+//  User message → AI reply → payment link → payment done
+//  → match.js → session.js → audio link
 //
-//  Crisis: warm reply sent immediately
-//          + payment link sent right after (no wait)
-//          → payment webhook → match.js → session.js → audio link
+//  Crisis = Red tier (₹299) — same flow, no skip
+//  Green  = ₹99  | Yellow = ₹199 | Red/Crisis = ₹299
 // ============================================================
 
 const router = require('express').Router();
 const twilio = require('twilio');
 const { handleMessage } = require('../aiEngine');
 
-const twilioClient = twilio(
-  process.env.TWILIO_ACCOUNT_SID,
-  process.env.TWILIO_AUTH_TOKEN
-);
+let twilioClient = null;
+let TWILIO_FROM  = null;
 
-// ──────────────────────────────────────────────
-//  CREATE RAZORPAY PAYMENT LINK
-// ──────────────────────────────────────────────
+function getTwilioClient() {
+  if (twilioClient) return twilioClient;
+  const sid  = process.env.TWILIO_ACCOUNT_SID;
+  const token = process.env.TWILIO_AUTH_TOKEN;
+  const from  = process.env.TWILIO_WHATSAPP_FROM;
+  if (!sid || !token || !from) {
+    console.warn('[Webhook] Twilio not configured — messages will NOT send');
+    return null;
+  }
+  TWILIO_FROM  = from.startsWith('whatsapp:') ? from : `whatsapp:${from}`;
+  twilioClient = twilio(sid, token);
+  return twilioClient;
+}
+
+async function sendWhatsApp(to, body) {
+  const client = getTwilioClient();
+  if (!client || !TWILIO_FROM) {
+    console.log(`[Webhook] DEMO — Would send to ${to}:\n${body}\n`);
+    return;
+  }
+  await client.messages.create({ from: TWILIO_FROM, to, body });
+}
+
 async function createRazorpayLink(sessionId, price) {
-  if (!process.env.RAZORPAY_KEY_ID ||
-      process.env.RAZORPAY_KEY_ID.includes('xxxx')) {
-    // Demo mode — return placeholder link
+  if (!process.env.RAZORPAY_KEY_ID || process.env.RAZORPAY_KEY_ID.includes('xxxx')) {
     return `https://rzp.io/l/baatchete-${sessionId.slice(0, 8)}`;
   }
-
   try {
     const creds = Buffer.from(
       `${process.env.RAZORPAY_KEY_ID}:${process.env.RAZORPAY_KEY_SECRET}`
     ).toString('base64');
-
     const res = await fetch('https://api.razorpay.com/v1/payment_links', {
-      method:  'POST',
+      method: 'POST',
       headers: { 'Content-Type': 'application/json', 'Authorization': `Basic ${creds}` },
       body: JSON.stringify({
-        amount:      price * 100,
-        currency:    'INR',
+        amount: price * 100, currency: 'INR',
         description: 'BaatChete — Mental Wellness Session',
         reference_id: sessionId,
         options: { checkout: { name: 'BaatChete', prefill: { contact: '' } } },
         expire_by: Math.floor(Date.now() / 1000) + 86400,
       }),
     });
-
     if (!res.ok) throw new Error(await res.text());
-    const data = await res.json();
-    return data.short_url;
+    return (await res.json()).short_url;
   } catch (err) {
     console.error('[Webhook] Razorpay error:', err.message);
     return `https://rzp.io/l/baatchete-${sessionId.slice(0, 8)}`;
   }
 }
 
-// ──────────────────────────────────────────────
-//  GET LISTENER NAME FROM FIREBASE
-// ──────────────────────────────────────────────
 async function getListenerName(db, phone) {
   if (!db) return null;
   try {
@@ -75,83 +82,52 @@ async function getListenerName(db, phone) {
 }
 
 // ──────────────────────────────────────────────
-//  MAIN WEBHOOK HANDLER
+//  MAIN WEBHOOK
 // ──────────────────────────────────────────────
 router.post('/', async (req, res) => {
   const userMessage = req.body.Body?.trim();
   const userPhone   = req.body.From;
-
   if (!userMessage || !userPhone) return res.sendStatus(400);
   console.log(`[Webhook] ${userPhone}: "${userMessage}"`);
 
   try {
     const db           = req.app.locals.db;
     const listenerName = await getListenerName(db, userPhone);
+    const sessionId    = `sess-${userPhone.replace(/\W/g, '')}-${Date.now()}`;
+    const paymentUrl   = await createRazorpayLink(sessionId, 199);
+    const result       = await handleMessage(db, userPhone, userMessage, listenerName, paymentUrl);
 
-    // Generate session ID for payment tracking
-    const sessionId  = `sess-${userPhone.replace(/\W/g, '')}-${Date.now()}`;
-    const price      = 199; // Will be overridden by tier price from result
+    // 1. Send AI reply
+    await sendWhatsApp(userPhone, result.reply);
 
-    // Create payment URL (real or demo)
-    const paymentUrl = await createRazorpayLink(sessionId, price);
-
-    const result = await handleMessage(db, userPhone, userMessage, listenerName, paymentUrl);
-
-    // ── Send primary reply ────────────────────────────────────
-    await twilioClient.messages.create({
-      from: process.env.TWILIO_WHATSAPP_FROM,
-      to:   userPhone,
-      body: result.reply,
-    });
-
-    // ── Crisis: also send payment message immediately after ───
-    if (result.isCrisis && result.paymentMessage) {
-      // Small delay so messages arrive in order
+    // 2. Send payment message — ALL tiers same (Green ₹99 / Yellow ₹199 / Red+Crisis ₹299)
+    //    Crisis: warm reply first → payment link 1.5s later
+    //    Normal: payment link after user confirms connect
+    if (result.paymentMessage) {
       setTimeout(async () => {
         try {
-          await twilioClient.messages.create({
-            from: process.env.TWILIO_WHATSAPP_FROM,
-            to:   userPhone,
-            body: result.paymentMessage,
-          });
-          console.log(`[Webhook] Crisis payment message sent to ${userPhone}`);
+          await sendWhatsApp(userPhone, result.paymentMessage);
+          const tag = result.isCrisis ? 'CRISIS Red ₹299' : `${result.triage?.tierTag} ₹${result.triage?.price}`;
+          console.log(`[Webhook] Payment sent → ${userPhone} | ${tag}`);
         } catch (err) {
-          console.error('[Webhook] Crisis payment msg error:', err.message);
+          console.error('[Webhook] Payment msg error:', err.message);
         }
       }, 1500);
     }
 
-    // ── Trigger matchmaking when truly ready ─────────────────
-    // For crisis: trigger immediately after payment message sends
-    // For normal: trigger after payment confirmed (Razorpay webhook)
-    if (result.action === 'match_counselor' && result.isCrisis) {
-      // Crisis: trigger match after short delay
-      setTimeout(() => {
-        triggerMatchmaking(req, userPhone, result);
-      }, 3000);
-    } else if (result.action && result.action !== 'continue' && result.action !== 'payment_pending') {
-      triggerMatchmaking(req, userPhone, result);
-    }
-
+    // 3. Matchmaking triggered by Razorpay payment-webhook below (not here)
     res.sendStatus(200);
 
   } catch (err) {
     console.error('[Webhook] Error:', err.message);
-    try {
-      await twilioClient.messages.create({
-        from: process.env.TWILIO_WHATSAPP_FROM,
-        to:   userPhone,
-        body: 'Ek second ruk jaiye... main yahan hoon. 🙏',
-      });
-    } catch (_) {}
+    try { await sendWhatsApp(userPhone, 'Ek second ruk jaiye... main yahan hoon. 🙏'); } catch (_) {}
     res.sendStatus(500);
   }
 });
 
 // ──────────────────────────────────────────────
 //  RAZORPAY PAYMENT WEBHOOK
-//  Fires when user completes payment
-//  → triggers match.js → session.js → audio link
+//  Payment done → trigger match → session → audio link
 // ──────────────────────────────────────────────
 router.post('/payment-webhook', async (req, res) => {
   try {
@@ -159,27 +135,20 @@ router.post('/payment-webhook', async (req, res) => {
     console.log('[Webhook] Razorpay event:', event.event);
 
     if (event.event === 'payment_link.paid') {
-      const phone      = event.payload?.payment_link?.entity?.reference_id?.split('-')[1];
-      const sessionId  = event.payload?.payment_link?.entity?.reference_id;
+      const refId = event.payload?.payment_link?.entity?.reference_id;
+      const phoneMatch = refId?.match(/sess-(whatsapp\d+)-/);
+      const phone = phoneMatch ? `whatsapp:+${phoneMatch[1].replace('whatsapp', '')}` : null;
 
       if (phone) {
-        const formattedPhone = `whatsapp:+${phone}`;
-        console.log(`[Webhook] Payment confirmed for ${formattedPhone}`);
-
-        // Trigger matchmaking now that payment is confirmed
+        console.log(`[Webhook] Payment confirmed → ${phone}`);
         const baseUrl = process.env.BASE_URL || `http://localhost:${process.env.PORT || 3000}`;
         await fetch(`${baseUrl}/match`, {
-          method:  'POST',
+          method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            phone:    formattedPhone,
-            sessionId,
-            paymentConfirmed: true,
-          }),
+          body: JSON.stringify({ phone, sessionId: refId, paymentConfirmed: true }),
         });
       }
     }
-
     res.sendStatus(200);
   } catch (err) {
     console.error('[Webhook] Payment webhook error:', err.message);
@@ -188,12 +157,12 @@ router.post('/payment-webhook', async (req, res) => {
 });
 
 // ──────────────────────────────────────────────
-//  TRIGGER MATCH → match.js
+//  TRIGGER MATCH
 // ──────────────────────────────────────────────
 function triggerMatchmaking(req, userPhone, result) {
   const baseUrl = process.env.BASE_URL || `http://localhost:${process.env.PORT || 3000}`;
   fetch(`${baseUrl}/match`, {
-    method:  'POST',
+    method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({
       phone:    userPhone,
